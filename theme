@@ -1,0 +1,15 @@
+{
+    "name": "meow",
+    "description": "zzz",
+    "authors": [
+        {
+            "name": "ray",
+            "id": "639959347518242821"
+        }
+    ],
+  "background": {
+    "blur": 0,
+    "url": "https://cdn.discordapp.com/attachments/1071183510255181974/1124583838069309440/Playboi_Carti_-_Feel_Like_God__Gazzzy_Remix__prod._miyokibeats.mp4",
+    "alpha": 1.0
+  }
+}
