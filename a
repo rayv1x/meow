@@ -1,0 +1,183 @@
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Camera = workspace.CurrentCamera
+
+local LocalPlayer = Players.LocalPlayer
+
+--// SETTINGS \\--
+local SETTINGS = {
+    AIMBOT_FOV = 50,
+    WALL_CHECK = false,
+    TEAM_CHECK = true,
+    DEATH_CHECK = true,
+    ESP_ENABLED = true,
+    ESP_MAX_DISTANCE = 300,
+    ESP_FADE_DISTANCE = 600,
+    ESP_COLOR = Color3.fromRGB(160, 32, 240),
+    ESP_THICKNESS = 1,
+}
+
+local espCircles = {}
+
+-- Team check (color-based fallback for games like Jailbird)
+local function IsEnemy(player)
+    if player == LocalPlayer then return false end
+    if not SETTINGS.TEAM_CHECK then return true end
+    if player.Team and LocalPlayer.Team then
+        return player.Team ~= LocalPlayer.Team
+    end
+    return true
+end
+
+-- Death check
+local function IsAlive(character)
+    if not SETTINGS.DEATH_CHECK then return true end
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    return humanoid and humanoid.Health > 0
+end
+
+-- Multi-raycast wall check for better detection in Jailbird & tricky games
+local function HasLineOfSight(targetPart)
+    if not SETTINGS.WALL_CHECK then return true end
+    if not targetPart or not targetPart.Parent then return false end
+
+    local origin = Camera.CFrame.Position
+    local targetPos = targetPart.Position
+
+    local offsets = {
+        Vector3.new(0, 0, 0),
+        Vector3.new(0.15, 0, 0),
+        Vector3.new(-0.15, 0, 0),
+        Vector3.new(0, 0.15, 0),
+        Vector3.new(0, -0.15, 0),
+        Vector3.new(0, 0, 0.15),
+        Vector3.new(0, 0, -0.15),
+    }
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character, targetPart.Parent}
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    rayParams.IgnoreWater = true
+
+    for _, offset in ipairs(offsets) do
+        local direction = (targetPos + offset - origin)
+        local rayResult = workspace:Raycast(origin, direction, rayParams)
+        if rayResult == nil or rayResult.Instance:IsDescendantOf(targetPart.Parent) then
+            -- At least one ray hit the target or no obstruction
+            return true
+        end
+    end
+
+    return false
+end
+
+local function GetScreenCenter()
+    local size = Camera.ViewportSize
+    return Vector2.new(size.X / 2, size.Y / 2)
+end
+
+local function FindTarget()
+    local closestTarget = nil
+    local closestDistance = SETTINGS.AIMBOT_FOV
+    local screenCenter = GetScreenCenter()
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            if IsEnemy(player) and IsAlive(player.Character) then
+                local head = player.Character:FindFirstChild("Head")
+                if head and HasLineOfSight(head) then
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+                    if onScreen then
+                        local dist = (screenCenter - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
+                        if dist < closestDistance then
+                            closestDistance = dist
+                            closestTarget = head
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return closestTarget
+end
+
+local function AimAt(targetPart)
+    if targetPart then
+        local origin = Camera.CFrame.Position
+        local direction = (targetPart.Position - origin).Unit
+        Camera.CFrame = CFrame.new(origin, origin + direction)
+    end
+end
+
+local function GetOrCreateCircle(player)
+    if espCircles[player] then return espCircles[player] end
+
+    local circle = Drawing.new("Circle")
+    circle.Visible = false
+    circle.Color = SETTINGS.ESP_COLOR
+    circle.Thickness = SETTINGS.ESP_THICKNESS
+    circle.NumSides = 32
+    circle.Filled = false
+    espCircles[player] = circle
+    return circle
+end
+
+local function UpdateESP()
+    if not SETTINGS.ESP_ENABLED then
+        for _, circle in pairs(espCircles) do
+            circle.Visible = false
+        end
+        return
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        local circle = GetOrCreateCircle(player)
+        circle.Visible = false
+
+        if player.Character and IsEnemy(player) and IsAlive(player.Character) then
+            local head = player.Character:FindFirstChild("Head")
+            if head then
+                local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+                if onScreen then
+                    local dist = (Camera.CFrame.Position - head.Position).Magnitude
+                    if dist <= SETTINGS.ESP_FADE_DISTANCE then
+                        local offsetPos = head.Position + Vector3.new(head.Size.X / 2, 0, 0)
+                        local screenOffsetPos, onScreenOffset = Camera:WorldToViewportPoint(offsetPos)
+                        if onScreenOffset then
+                            local radius = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(screenOffsetPos.X, screenOffsetPos.Y)).Magnitude
+                            radius = math.clamp(radius, 4, 40)
+
+                            circle.Position = Vector2.new(screenPos.X, screenPos.Y)
+                            circle.Radius = radius
+
+                            local alpha = 1
+                            if dist > SETTINGS.ESP_MAX_DISTANCE then
+                                alpha = 1 - ((dist - SETTINGS.ESP_MAX_DISTANCE) / (SETTINGS.ESP_FADE_DISTANCE - SETTINGS.ESP_MAX_DISTANCE))
+                            end
+
+                            circle.Transparency = alpha
+                            circle.Visible = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+Players.PlayerRemoving:Connect(function(player)
+    if espCircles[player] then
+        espCircles[player]:Remove()
+        espCircles[player] = nil
+    end
+end)
+
+RunService.RenderStepped:Connect(function()
+    local target = FindTarget()
+    if target then
+        AimAt(target)
+    end
+    UpdateESP()
+end)
