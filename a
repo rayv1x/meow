@@ -7,7 +7,7 @@ local LocalPlayer = Players.LocalPlayer
 
 --// SETTINGS \\--
 local SETTINGS = {
-    AIMBOT_FOV = 50,
+    AIMBOT_FOV = 30,
     WALL_CHECK = false,
     TEAM_CHECK = true,
     DEATH_CHECK = true,
