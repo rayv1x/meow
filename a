@@ -1,183 +1,284 @@
--- Services
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local Camera = workspace.CurrentCamera
+--// Preventing Multiple Processes
+pcall(function()
+	getgenv().Aimbot.Functions:Exit()
+end)
 
+--// Environment
+getgenv().Aimbot = {}
+local Environment = getgenv().Aimbot
+
+--// Services
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Players = game:GetService("Players")
+local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
---// SETTINGS \\--
-local SETTINGS = {
-    AIMBOT_FOV = 30,
-    WALL_CHECK = false,
-    TEAM_CHECK = true,
-    DEATH_CHECK = true,
-    ESP_ENABLED = true,
-    ESP_MAX_DISTANCE = 300,
-    ESP_FADE_DISTANCE = 600,
-    ESP_COLOR = Color3.fromRGB(160, 32, 240),
-    ESP_THICKNESS = 1,
+--// Variables
+local RequiredDistance, Typing, Animation, ServiceConnections = 2000, false, nil, {}
+local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local Running = true -- Always active
+
+--// Settings
+Environment.Settings = {
+	Enabled = true,
+	TeamCheck = true,
+	AliveCheck = true,
+	WallCheck = false,
+	Sensitivity = 0,
+	ThirdPerson = false,
+	ThirdPersonSensitivity = 3,
+	TriggerKey = "MouseButton2", -- unused now
+	Toggle = false, -- unused now
+	LockPart = "Head"
 }
 
-local espCircles = {}
+Environment.FOVSettings = {
+	Enabled = true,
+	Visible = true,
+	Amount = 30,
+	Color = Color3.fromRGB(0, 0, 0),
+	LockedColor = Color3.fromRGB(255, 70, 70),
+	Transparency = 0.5,
+	Sides = 60,
+	Thickness = 1,
+	Filled = false
+}
 
--- Team check (color-based fallback for games like Jailbird)
-local function IsEnemy(player)
-    if player == LocalPlayer then return false end
-    if not SETTINGS.TEAM_CHECK then return true end
-    if player.Team and LocalPlayer.Team then
-        return player.Team ~= LocalPlayer.Team
-    end
-    return true
+Environment.FOVCircle = Drawing.new("Circle")
+
+--// Cancel Lock
+local function CancelLock()
+	Environment.Locked = nil
+	if Animation then Animation:Cancel() end
+	Environment.FOVCircle.Color = Environment.FOVSettings.Color
 end
 
--- Death check
-local function IsAlive(character)
-    if not SETTINGS.DEATH_CHECK then return true end
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-    return humanoid and humanoid.Health > 0
+--// Get Closest Player
+local function GetClosestPlayer()
+	RequiredDistance = Environment.FOVSettings.Enabled and Environment.FOVSettings.Amount or 2000
+	local mousePos = IsMobile and Camera.ViewportSize / 2 or UserInputService:GetMouseLocation()
+	local closest, closestDist = nil, RequiredDistance
+
+	for _, v in next, Players:GetPlayers() do
+		if v ~= LocalPlayer then
+			local char = v.Character
+			local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+			local lockPart = char and char:FindFirstChild(Environment.Settings.LockPart)
+
+			if char and humanoid and lockPart then
+				if Environment.Settings.TeamCheck and v.Team == LocalPlayer.Team then continue end
+				if Environment.Settings.AliveCheck and humanoid.Health <= 0 then continue end
+				if Environment.Settings.WallCheck and #(Camera:GetPartsObscuringTarget({lockPart.Position}, char:GetDescendants())) > 0 then continue end
+
+				local screenPos, onScreen = Camera:WorldToViewportPoint(lockPart.Position)
+				local dist = (mousePos - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
+
+				if dist < closestDist and onScreen then
+					closestDist = dist
+					closest = v
+				end
+			end
+		end
+	end
+
+	if closest ~= Environment.Locked then
+		Environment.Locked = closest
+		if Environment.Locked then
+			Environment.FOVCircle.Color = Environment.FOVSettings.LockedColor
+		else
+			Environment.FOVCircle.Color = Environment.FOVSettings.Color
+		end
+	end
 end
 
--- Multi-raycast wall check for better detection in Jailbird & tricky games
-local function HasLineOfSight(targetPart)
-    if not SETTINGS.WALL_CHECK then return true end
-    if not targetPart or not targetPart.Parent then return false end
-
-    local origin = Camera.CFrame.Position
-    local targetPos = targetPart.Position
-
-    local offsets = {
-        Vector3.new(0, 0, 0),
-        Vector3.new(0.15, 0, 0),
-        Vector3.new(-0.15, 0, 0),
-        Vector3.new(0, 0.15, 0),
-        Vector3.new(0, -0.15, 0),
-        Vector3.new(0, 0, 0.15),
-        Vector3.new(0, 0, -0.15),
-    }
-
-    local rayParams = RaycastParams.new()
-    rayParams.FilterDescendantsInstances = {LocalPlayer.Character, targetPart.Parent}
-    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-    rayParams.IgnoreWater = true
-
-    for _, offset in ipairs(offsets) do
-        local direction = (targetPos + offset - origin)
-        local rayResult = workspace:Raycast(origin, direction, rayParams)
-        if rayResult == nil or rayResult.Instance:IsDescendantOf(targetPart.Parent) then
-            -- At least one ray hit the target or no obstruction
-            return true
-        end
-    end
-
-    return false
-end
-
-local function GetScreenCenter()
-    local size = Camera.ViewportSize
-    return Vector2.new(size.X / 2, size.Y / 2)
-end
-
-local function FindTarget()
-    local closestTarget = nil
-    local closestDistance = SETTINGS.AIMBOT_FOV
-    local screenCenter = GetScreenCenter()
-
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            if IsEnemy(player) and IsAlive(player.Character) then
-                local head = player.Character:FindFirstChild("Head")
-                if head and HasLineOfSight(head) then
-                    local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
-                    if onScreen then
-                        local dist = (screenCenter - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
-                        if dist < closestDistance then
-                            closestDistance = dist
-                            closestTarget = head
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    return closestTarget
-end
-
-local function AimAt(targetPart)
-    if targetPart then
-        local origin = Camera.CFrame.Position
-        local direction = (targetPart.Position - origin).Unit
-        Camera.CFrame = CFrame.new(origin, origin + direction)
-    end
-end
-
-local function GetOrCreateCircle(player)
-    if espCircles[player] then return espCircles[player] end
-
-    local circle = Drawing.new("Circle")
-    circle.Visible = false
-    circle.Color = SETTINGS.ESP_COLOR
-    circle.Thickness = SETTINGS.ESP_THICKNESS
-    circle.NumSides = 32
-    circle.Filled = false
-    espCircles[player] = circle
-    return circle
-end
-
-local function UpdateESP()
-    if not SETTINGS.ESP_ENABLED then
-        for _, circle in pairs(espCircles) do
-            circle.Visible = false
-        end
-        return
-    end
-
-    for _, player in ipairs(Players:GetPlayers()) do
-        local circle = GetOrCreateCircle(player)
-        circle.Visible = false
-
-        if player.Character and IsEnemy(player) and IsAlive(player.Character) then
-            local head = player.Character:FindFirstChild("Head")
-            if head then
-                local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
-                if onScreen then
-                    local dist = (Camera.CFrame.Position - head.Position).Magnitude
-                    if dist <= SETTINGS.ESP_FADE_DISTANCE then
-                        local offsetPos = head.Position + Vector3.new(head.Size.X / 2, 0, 0)
-                        local screenOffsetPos, onScreenOffset = Camera:WorldToViewportPoint(offsetPos)
-                        if onScreenOffset then
-                            local radius = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(screenOffsetPos.X, screenOffsetPos.Y)).Magnitude
-                            radius = math.clamp(radius, 4, 40)
-
-                            circle.Position = Vector2.new(screenPos.X, screenPos.Y)
-                            circle.Radius = radius
-
-                            local alpha = 1
-                            if dist > SETTINGS.ESP_MAX_DISTANCE then
-                                alpha = 1 - ((dist - SETTINGS.ESP_MAX_DISTANCE) / (SETTINGS.ESP_FADE_DISTANCE - SETTINGS.ESP_MAX_DISTANCE))
-                            end
-
-                            circle.Transparency = alpha
-                            circle.Visible = true
-                        end
-                    end
-                end
-            end
-        end
-    end
-end
-
-Players.PlayerRemoving:Connect(function(player)
-    if espCircles[player] then
-        espCircles[player]:Remove()
-        espCircles[player] = nil
-    end
+--// Typing Check
+ServiceConnections.TypingStartedConnection = UserInputService.TextBoxFocused:Connect(function()
+	Typing = true
 end)
 
+ServiceConnections.TypingEndedConnection = UserInputService.TextBoxFocusReleased:Connect(function()
+	Typing = false
+end)
+
+--// Main Loop
+local function Load()
+	ServiceConnections.RenderSteppedConnection = RunService.RenderStepped:Connect(function()
+		local screenCenter = Camera.ViewportSize / 2
+		local mousePos = IsMobile and screenCenter or UserInputService:GetMouseLocation()
+
+		if Environment.FOVSettings.Enabled and Environment.Settings.Enabled then
+			Environment.FOVCircle.Position = mousePos
+			Environment.FOVCircle.Radius = Environment.FOVSettings.Amount
+			Environment.FOVCircle.Thickness = Environment.FOVSettings.Thickness
+			Environment.FOVCircle.Filled = Environment.FOVSettings.Filled
+			Environment.FOVCircle.NumSides = Environment.FOVSettings.Sides
+			Environment.FOVCircle.Color = Environment.FOVSettings.Color
+			Environment.FOVCircle.Transparency = Environment.FOVSettings.Transparency
+			Environment.FOVCircle.Visible = Environment.FOVSettings.Visible
+		else
+			Environment.FOVCircle.Visible = false
+		end
+
+		if Running and Environment.Settings.Enabled then
+			GetClosestPlayer()
+
+			if Environment.Locked then
+				local char = Environment.Locked.Character
+				local lockPart = char and char:FindFirstChild(Environment.Settings.LockPart)
+
+				if lockPart then
+					if Environment.Settings.ThirdPerson then
+						local vector = Camera:WorldToViewportPoint(lockPart.Position)
+						mousemoverel(
+							(vector.X - mousePos.X) * Environment.Settings.ThirdPersonSensitivity,
+							(vector.Y - mousePos.Y) * Environment.Settings.ThirdPersonSensitivity
+						)
+					else
+						if Environment.Settings.Sensitivity > 0 then
+							Animation = TweenService:Create(Camera, TweenInfo.new(
+								Environment.Settings.Sensitivity,
+								Enum.EasingStyle.Sine,
+								Enum.EasingDirection.Out
+							), {
+								CFrame = CFrame.new(Camera.CFrame.Position, lockPart.Position)
+							})
+							Animation:Play()
+						else
+							Camera.CFrame = CFrame.new(Camera.CFrame.Position, lockPart.Position)
+						end
+					end
+					Environment.FOVCircle.Color = Environment.FOVSettings.LockedColor
+				else
+					CancelLock()
+				end
+			end
+		end
+	end)
+end
+
+--// Functions
+Environment.Functions = {}
+
+function Environment.Functions:Exit()
+	for _, v in next, ServiceConnections do
+		v:Disconnect()
+	end
+	if Environment.FOVCircle.Remove then Environment.FOVCircle:Remove() end
+	getgenv().Aimbot.Functions = nil
+	getgenv().Aimbot = nil
+	Load = nil; GetClosestPlayer = nil; CancelLock = nil
+end
+
+function Environment.Functions:Restart()
+	for _, v in next, ServiceConnections do
+		v:Disconnect()
+	end
+	Load()
+end
+
+function Environment.Functions:ResetSettings()
+	Environment.Settings = {
+		Enabled = true,
+		TeamCheck = false,
+		AliveCheck = true,
+		WallCheck = false,
+		Sensitivity = 0,
+		ThirdPerson = false,
+		ThirdPersonSensitivity = 3,
+		TriggerKey = "MouseButton2",
+		Toggle = false,
+		LockPart = "Head"
+	}
+
+	Environment.FOVSettings = {
+		Enabled = true,
+		Visible = true,
+		Amount = 90,
+		Color = Color3.fromRGB(255, 255, 255),
+		LockedColor = Color3.fromRGB(255, 70, 70),
+		Transparency = 0.5,
+		Sides = 60,
+		Thickness = 1,
+		Filled = false
+	}
+end
+
+--// Load it
+Load()
+
+
+--// SETTINGS
+local TEAM_CHECK = true
+local CIRCLE_COLOR = Color3.new(1, 1, 1)
+local CIRCLE_RADIUS = 8
+local CIRCLE_TRANSPARENCY = 0.4
+local CIRCLE_THICKNESS = 1
+
+--// SERVICES
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+--// ESP STORAGE
+local Circles = {}
+
+--// Create circle drawing
+local function createCircle()
+	local circle = Drawing.new("Circle")
+	circle.Color = CIRCLE_COLOR
+	circle.Radius = CIRCLE_RADIUS
+	circle.Filled = false
+	circle.Thickness = CIRCLE_THICKNESS
+	circle.Transparency = CIRCLE_TRANSPARENCY
+	circle.Visible = false
+	return circle
+end
+
+--// Cleanup for player
+local function cleanup(player)
+	if Circles[player] then
+		Circles[player]:Remove()
+		Circles[player] = nil
+	end
+end
+
+--// Team check
+local function isEnemy(player)
+	if not TEAM_CHECK then return true end
+	local success, sameTeam = pcall(function()
+		return player.TeamColor == LocalPlayer.TeamColor
+	end)
+	return not (success and sameTeam)
+end
+
+--// Per-frame ESP
 RunService.RenderStepped:Connect(function()
-    local target = FindTarget()
-    if target then
-        AimAt(target)
-    end
-    UpdateESP()
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer then
+			local char = player.Character
+			local head = char and char:FindFirstChild("Head")
+			local humanoid = char and char:FindFirstChildWhichIsA("Humanoid")
+			if head and humanoid and humanoid.Health > 0 and isEnemy(player) then
+				if not Circles[player] then
+					Circles[player] = createCircle()
+				end
+				local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+				if onScreen then
+					local circle = Circles[player]
+					circle.Position = Vector2.new(screenPos.X, screenPos.Y)
+					circle.Visible = true
+				else
+					Circles[player].Visible = false
+				end
+			else
+				cleanup(player)
+			end
+		end
+	end
 end)
+
+--// Cleanup on leave
+Players.PlayerRemoving:Connect(cleanup)
